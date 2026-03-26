@@ -28,7 +28,8 @@ export const signUp = async (
       .insert([
         {
           id: data.user.id,
-          username,
+          username: username.toLowerCase(),
+          email: data.user.email, 
           first_name,
           last_name,
           updated_at: new Date().toISOString(),
