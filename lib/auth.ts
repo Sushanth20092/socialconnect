@@ -7,7 +7,6 @@ export const signUp = async (
   first_name: string,
   last_name: string
 ) => {
-  // Check username uniqueness before attempting signup
   const { data: existingUser } = await supabase
     .from("profiles")
     .select("username")
@@ -25,16 +24,14 @@ export const signUp = async (
   if (data.user) {
     const { error: profileError } = await supabase
       .from("profiles")
-      .insert([
-        {
-          id: data.user.id,
-          username: username.toLowerCase(),
-          email: data.user.email, 
-          first_name,
-          last_name,
-          updated_at: new Date().toISOString(),
-        },
-      ])
+      .insert([{
+        id: data.user.id,
+        username: username.toLowerCase(),
+        email: data.user.email,
+        first_name,
+        last_name,
+        updated_at: new Date().toISOString(),
+      }])
 
     if (profileError) return { error: profileError }
   }
@@ -42,14 +39,10 @@ export const signUp = async (
   return { data }
 }
 
-
-// login
 export const signIn = async (identifier: string, password: string) => {
   const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)
-
   let email = identifier
 
-  // If username, look up the associated email from profiles
   if (!isEmail) {
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
@@ -68,7 +61,6 @@ export const signIn = async (identifier: string, password: string) => {
 
   if (error) return { error }
 
-  // Track last login
   if (data.user) {
     await supabase
       .from("profiles")
@@ -79,14 +71,7 @@ export const signIn = async (identifier: string, password: string) => {
   return { data }
 }
 
-// logout
 export const signOut = async () => {
   const { error } = await supabase.auth.signOut()
   return { error }
 }
-
-// Get current session
-const { data: { session } } = await supabase.auth.getSession()
-
-// Get current user
-const { data: { user } } = await supabase.auth.getUser()

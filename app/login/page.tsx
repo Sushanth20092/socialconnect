@@ -58,7 +58,7 @@ export default function LoginPage() {
     if (error) {
       setErrors({ general: error.message })
     } else {
-      router.push("/")
+      router.replace("/home")
     }
   }
 
