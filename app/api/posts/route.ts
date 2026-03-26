@@ -123,3 +123,62 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ data: post }, { status: 201 })
 }
+
+// GET POST
+export async function GET(req: NextRequest) {
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
+
+  // Pagination query params
+  const { searchParams } = new URL(req.url)
+  const page = parseInt(searchParams.get("page") || "1")
+  const limit = parseInt(searchParams.get("limit") || "10")
+  const offset = (page - 1) * limit
+
+  // Get total count for pagination meta
+  const { count } = await supabase
+    .from("posts")
+    .select("*", { count: "exact", head: true })
+    .eq("is_active", true)
+
+  // Get posts
+  const { data: posts, error } = await supabase
+    .from("posts")
+    .select(`
+      id,
+      content,
+      image_url,
+      like_count,
+      comment_count,
+      is_active,
+      created_at,
+      updated_at,
+      author:profiles(
+        id,
+        username,
+        first_name,
+        last_name,
+        avatar_url
+      )
+    `)
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .range(offset, offset + limit - 1)
+
+  if (error) {
+    console.error("Get posts error:", error)
+    return NextResponse.json({ error: "Failed to fetch posts" }, { status: 500 })
+  }
+
+  return NextResponse.json({
+    data: posts,
+    meta: {
+      page,
+      limit,
+      total: count ?? 0,
+      total_pages: Math.ceil((count ?? 0) / limit),
+    },
+  }, { status: 200 })
+}
