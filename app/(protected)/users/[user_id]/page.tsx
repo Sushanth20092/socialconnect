@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { useRouter, useParams } from "next/navigation"
+import { supabase } from "@/lib/supabaseClient"
 import Navbar from "@/components/navbar"
 
 interface Profile {
@@ -44,17 +45,24 @@ export default function UserProfilePage() {
   const [postsLoading, setPostsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Follow state
+  const [following, setFollowing] = useState(false)
+  const [followLoading, setFollowLoading] = useState(false)
+  const [followerCount, setFollowerCount] = useState(0)
+  const [followingCount, setFollowingCount] = useState(0)
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+
+  const getToken = async () => {
+    const { data: { session } } = await supabase.auth.getSession()
+    return session?.access_token ?? null
+  }
+
   const fetchProfile = async () => {
     setProfileLoading(true)
     const res = await fetch(`/api/users/${user_id}`)
     const json = await res.json()
     setProfileLoading(false)
-
-    if (!res.ok) {
-      setError(json.error || "User not found")
-      return
-    }
-
+    if (!res.ok) { setError(json.error || "User not found"); return }
     setProfile(json.data)
   }
 
@@ -63,33 +71,83 @@ export default function UserProfilePage() {
     const res = await fetch(`/api/users/${user_id}/posts?page=${pageNum}&limit=10`)
     const json = await res.json()
     setPostsLoading(false)
-
-    if (!res.ok) {
-      setError(json.error || "Failed to load posts")
-      return
-    }
-
+    if (!res.ok) { setError(json.error || "Failed to load posts"); return }
     setPosts(json.data)
     setMeta(json.meta)
   }
 
-  useEffect(() => {
-    if (user_id) {
-      fetchProfile()
-      fetchPosts(page)
+  const fetchFollowCounts = async () => {
+    const [followersRes, followingRes] = await Promise.all([
+      fetch(`/api/users/${user_id}/followers?limit=1`),
+      fetch(`/api/users/${user_id}/following?limit=1`),
+    ])
+    const [followersJson, followingJson] = await Promise.all([
+      followersRes.json(),
+      followingRes.json(),
+    ])
+    if (followersRes.ok) setFollowerCount(followersJson.meta.total)
+    if (followingRes.ok) setFollowingCount(followingJson.meta.total)
+  }
+
+  const checkFollowing = async (token: string) => {
+    const res = await fetch(`/api/users/${user_id}/follow`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (res.ok) {
+      const json = await res.json()
+      setFollowing(json.following)
     }
+  }
+
+  useEffect(() => {
+    if (!user_id) return
+
+    const init = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session) {
+        setCurrentUserId(session.user.id)
+        await Promise.all([
+          fetchProfile(),
+          fetchPosts(page),
+          fetchFollowCounts(),
+          checkFollowing(session.access_token),
+        ])
+      } else {
+        await Promise.all([fetchProfile(), fetchPosts(page), fetchFollowCounts()])
+      }
+    }
+
+    init()
   }, [user_id])
 
   useEffect(() => {
     if (user_id) fetchPosts(page)
   }, [page])
 
+  const handleFollow = async () => {
+    const token = await getToken()
+    if (!token) { router.replace("/login"); return }
+
+    setFollowLoading(true)
+    const method = following ? "DELETE" : "POST"
+    const res = await fetch(`/api/users/${user_id}/follow`, {
+      method,
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    setFollowLoading(false)
+
+    if (res.ok) {
+      setFollowing(!following)
+      setFollowerCount((prev) => following ? prev - 1 : prev + 1)
+    }
+  }
+
   const formatDate = (dateStr: string) =>
     new Date(dateStr).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
+      month: "short", day: "numeric", year: "numeric",
     })
+
+  const isOwnProfile = currentUserId === user_id
 
   if (profileLoading) {
     return (
@@ -117,10 +175,7 @@ export default function UserProfilePage() {
         <Navbar />
         <div className="max-w-xl mx-auto px-4 py-8 text-center">
           <p className="text-sm text-gray-500 mb-3">{error}</p>
-          <button
-            onClick={() => router.back()}
-            className="text-sm text-black underline"
-          >
+          <button onClick={() => router.back()} className="text-sm text-black underline">
             Go back
           </button>
         </div>
@@ -137,28 +192,53 @@ export default function UserProfilePage() {
         {/* Profile card */}
         {profile && (
           <div className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
-            <div className="flex items-center gap-4">
-              {/* Avatar */}
-              <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center
-                justify-center text-lg font-semibold text-gray-600 overflow-hidden flex-shrink-0">
-                {profile.avatar_url ? (
-                  <img
-                    src={profile.avatar_url}
-                    alt={profile.username}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  `${profile.first_name[0]}${profile.last_name[0]}`
-                )}
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-4">
+                {/* Avatar */}
+                <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center
+                  justify-center text-lg font-semibold text-gray-600 overflow-hidden flex-shrink-0">
+                  {profile.avatar_url ? (
+                    <img src={profile.avatar_url} alt={profile.username}
+                      className="w-full h-full object-cover" />
+                  ) : (
+                    `${profile.first_name[0]}${profile.last_name[0]}`
+                  )}
+                </div>
+
+                {/* Name & username */}
+                <div>
+                  <h1 className="text-lg font-semibold text-gray-900">
+                    {profile.first_name} {profile.last_name}
+                  </h1>
+                  <p className="text-sm text-gray-400">@{profile.username}</p>
+                </div>
               </div>
 
-              {/* Name & username */}
-              <div>
-                <h1 className="text-lg font-semibold text-gray-900">
-                  {profile.first_name} {profile.last_name}
-                </h1>
-                <p className="text-sm text-gray-400">@{profile.username}</p>
-              </div>
+              {/* Follow button — only show if not own profile */}
+              {!isOwnProfile && (
+                <button
+                  onClick={handleFollow}
+                  disabled={followLoading}
+                  className={`text-sm px-4 py-1.5 rounded-lg border transition disabled:opacity-40
+                    ${following
+                      ? "border-gray-200 text-gray-600 hover:border-red-200 hover:text-red-500 hover:bg-red-50"
+                      : "bg-black text-white border-black hover:opacity-85"
+                    }`}
+                >
+                  {followLoading ? "..." : following ? "Following" : "Follow"}
+                </button>
+              )}
+
+              {/* Own profile shortcut */}
+              {isOwnProfile && (
+                <button
+                  onClick={() => router.push("/profile")}
+                  className="text-sm border border-gray-200 px-3 py-1.5 rounded-lg
+                    hover:bg-gray-50 transition text-gray-700"
+                >
+                  Edit profile
+                </button>
+              )}
             </div>
 
             {/* Bio */}
@@ -171,12 +251,8 @@ export default function UserProfilePage() {
               <div className="mt-3 flex flex-wrap gap-3 text-xs text-gray-400">
                 {profile.location && <span>📍 {profile.location}</span>}
                 {profile.website && (
-                  <a
-                    href={profile.website}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-500 hover:underline"
-                  >
+                  <a href={profile.website} target="_blank" rel="noopener noreferrer"
+                    className="text-blue-500 hover:underline">
                     🔗 {profile.website}
                   </a>
                 )}
@@ -184,10 +260,24 @@ export default function UserProfilePage() {
             )}
 
             {/* Stats */}
-            <div className="mt-4 pt-4 border-t border-gray-100">
-              <div className="text-center w-fit">
+            <div className="mt-4 pt-4 border-t border-gray-100 flex gap-6">
+              <div className="text-center">
                 <p className="text-base font-semibold text-gray-900">{profile.posts_count}</p>
                 <p className="text-xs text-gray-400">Posts</p>
+              </div>
+              <div
+                className="text-center cursor-pointer hover:opacity-70 transition"
+                onClick={() => router.push(`/users/${user_id}/followers`)}
+              >
+                <p className="text-base font-semibold text-gray-900">{followerCount}</p>
+                <p className="text-xs text-gray-400">Followers</p>
+              </div>
+              <div
+                className="text-center cursor-pointer hover:opacity-70 transition"
+                onClick={() => router.push(`/users/${user_id}/following`)}
+              >
+                <p className="text-base font-semibold text-gray-900">{followingCount}</p>
+                <p className="text-xs text-gray-400">Following</p>
               </div>
             </div>
           </div>
@@ -228,12 +318,9 @@ export default function UserProfilePage() {
                 <p className="text-sm text-gray-800 leading-relaxed mb-3">{post.content}</p>
 
                 {post.image_url && (
-                  <img
-                    src={post.image_url}
-                    alt="Post image"
+                  <img src={post.image_url} alt="Post image"
                     className="w-full max-h-60 object-cover rounded-lg border
-                      border-gray-100 mb-3"
-                  />
+                      border-gray-100 mb-3" />
                 )}
 
                 <div className="flex items-center gap-4 pt-2 border-t border-gray-100">

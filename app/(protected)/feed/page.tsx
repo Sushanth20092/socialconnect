@@ -28,9 +28,10 @@ interface Meta {
   limit: number
   total: number
   total_pages: number
+  is_personalised: boolean
 }
 
-export default function HomePage() {
+export default function FeedPage() {
   const router = useRouter()
 
   const [posts, setPosts] = useState<Post[]>([])
@@ -38,41 +39,36 @@ export default function HomePage() {
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
 
-  // { [post_id]: boolean }
   const [likedMap, setLikedMap] = useState<Record<string, boolean>>({})
   const [likeLoadingMap, setLikeLoadingMap] = useState<Record<string, boolean>>({})
-
-  // { [author_id]: boolean }
-  const [followMap, setFollowMap] = useState<Record<string, boolean>>({})
-  const [followLoadingMap, setFollowLoadingMap] = useState<Record<string, boolean>>({})
 
   const getToken = async () => {
     const { data: { session } } = await supabase.auth.getSession()
     return session?.access_token ?? null
   }
 
-  const fetchPosts = async (pageNum: number) => {
+  const fetchFeed = async (pageNum: number) => {
     setLoading(true)
     setError(null)
 
-    const res = await fetch(`/api/posts?page=${pageNum}&limit=10`)
+    const token = await getToken()
+    if (!token) { router.replace("/login"); return }
+
+    const res = await fetch(`/api/feed?page=${pageNum}&limit=10`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
     const json = await res.json()
     setLoading(false)
 
-    if (!res.ok) { setError(json.error || "Failed to load posts"); return }
+    if (!res.ok) {
+      setError(json.error || "Failed to load feed")
+      return
+    }
 
     setPosts(json.data)
     setMeta(json.meta)
-
-    const token = await getToken()
-    if (token) {
-      await Promise.all([
-        checkLikedBatch(json.data, token),
-        checkFollowBatch(json.data, token),
-      ])
-    }
+    checkLikedBatch(json.data, token)
   }
 
   const checkLikedBatch = async (postList: Post[], token: string) => {
@@ -86,28 +82,6 @@ export default function HomePage() {
     const map: Record<string, boolean> = {}
     results.forEach(({ id, liked }) => { map[id] = liked })
     setLikedMap(map)
-  }
-
-  const checkFollowBatch = async (postList: Post[], token: string) => {
-    // Get unique author IDs, excluding current user
-    const { data: { session } } = await supabase.auth.getSession()
-    const userId = session?.user.id
-    setCurrentUserId(userId ?? null)
-
-    const uniqueAuthorIds = [...new Set(postList.map((p) => p.author.id))].filter(
-      (id) => id !== userId
-    )
-
-    const results = await Promise.all(
-      uniqueAuthorIds.map((authorId) =>
-        fetch(`/api/users/${authorId}/follow`, {
-          headers: { Authorization: `Bearer ${token}` },
-        }).then((r) => r.json()).then((j) => ({ id: authorId, following: j.following ?? false }))
-      )
-    )
-    const map: Record<string, boolean> = {}
-    results.forEach(({ id, following }) => { map[id] = following })
-    setFollowMap(map)
   }
 
   const handleLike = async (postId: string) => {
@@ -136,27 +110,8 @@ export default function HomePage() {
     }
   }
 
-  const handleFollow = async (authorId: string) => {
-    const token = await getToken()
-    if (!token) { router.replace("/login"); return }
-
-    const isFollowing = followMap[authorId] ?? false
-    setFollowLoadingMap((prev) => ({ ...prev, [authorId]: true }))
-
-    const res = await fetch(`/api/users/${authorId}/follow`, {
-      method: isFollowing ? "DELETE" : "POST",
-      headers: { Authorization: `Bearer ${token}` },
-    })
-
-    setFollowLoadingMap((prev) => ({ ...prev, [authorId]: false }))
-
-    if (res.ok) {
-      setFollowMap((prev) => ({ ...prev, [authorId]: !isFollowing }))
-    }
-  }
-
   useEffect(() => {
-    fetchPosts(page)
+    fetchFeed(page)
   }, [page])
 
   const formatDate = (dateStr: string) =>
@@ -172,13 +127,22 @@ export default function HomePage() {
 
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-xl font-medium text-gray-900">Home</h1>
+          <div>
+            <h1 className="text-xl font-medium text-gray-900">Your Feed</h1>
+            {meta && (
+              <p className="text-xs text-gray-400 mt-0.5">
+                {meta.is_personalised
+                  ? "Posts from people you follow"
+                  : "Follow people to personalise your feed"}
+              </p>
+            )}
+          </div>
           <button
-            onClick={() => router.push("/post")}
-            className="text-sm bg-black text-white px-4 py-1.5 rounded-lg
-              hover:opacity-85 transition"
+            onClick={() => router.push("/users")}
+            className="text-sm border border-gray-200 px-4 py-1.5 rounded-lg
+              hover:bg-gray-50 transition text-gray-700"
           >
-            New post
+            Find people
           </button>
         </div>
 
@@ -210,12 +174,16 @@ export default function HomePage() {
         {/* Empty state */}
         {!loading && posts.length === 0 && (
           <div className="text-center py-16">
-            <p className="text-gray-400 text-sm">No posts yet.</p>
+            <p className="text-gray-400 text-sm">
+              {meta?.is_personalised
+                ? "No posts from people you follow yet."
+                : "You're not following anyone yet."}
+            </p>
             <button
-              onClick={() => router.push("/post")}
+              onClick={() => router.push("/users")}
               className="mt-3 text-sm text-black underline"
             >
-              Create the first one
+              Find people to follow
             </button>
           </div>
         )}
@@ -230,48 +198,28 @@ export default function HomePage() {
                   hover:border-gray-300 transition cursor-pointer"
                 onClick={() => router.push(`/post/${post.id}`)}
               >
-                {/* Author row */}
-                <div className="flex items-center justify-between mb-3">
-                  <div
-                    className="flex items-center gap-3"
-                    onClick={(e) => { e.stopPropagation(); router.push(`/users/${post.author.id}`) }}
-                  >
-                    <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center
-                      justify-center text-xs font-medium text-gray-600 overflow-hidden">
-                      {post.author.avatar_url ? (
-                        <img src={post.author.avatar_url} alt={post.author.username}
-                          className="w-full h-full object-cover" />
-                      ) : (
-                        `${post.author.first_name[0]}${post.author.last_name[0]}`
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-900 hover:underline">
-                        {post.author.first_name} {post.author.last_name}
-                      </p>
-                      <p className="text-xs text-gray-400">
-                        @{post.author.username} · {formatDate(post.created_at)}
-                      </p>
-                    </div>
+                {/* Author */}
+                <div
+                  className="flex items-center gap-3 mb-3"
+                  onClick={(e) => { e.stopPropagation(); router.push(`/users/${post.author.id}`) }}
+                >
+                  <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center
+                    justify-center text-xs font-medium text-gray-600 overflow-hidden">
+                    {post.author.avatar_url ? (
+                      <img src={post.author.avatar_url} alt={post.author.username}
+                        className="w-full h-full object-cover" />
+                    ) : (
+                      `${post.author.first_name[0]}${post.author.last_name[0]}`
+                    )}
                   </div>
-
-                  {/* Follow button — hide on own posts */}
-                  {currentUserId && post.author.id !== currentUserId && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleFollow(post.author.id) }}
-                      disabled={followLoadingMap[post.author.id]}
-                      className={`text-xs px-3 py-1 rounded-lg border transition disabled:opacity-40
-                        ${followMap[post.author.id]
-                          ? "border-gray-200 text-gray-500 hover:border-red-200 hover:text-red-500"
-                          : "border-gray-300 text-gray-600 hover:bg-gray-50"
-                        }`}
-                    >
-                      {followLoadingMap[post.author.id]
-                        ? "..."
-                        : followMap[post.author.id] ? "Following" : "+ Follow"
-                      }
-                    </button>
-                  )}
+                  <div>
+                    <p className="text-sm font-medium text-gray-900 hover:underline">
+                      {post.author.first_name} {post.author.last_name}
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      @{post.author.username} · {formatDate(post.created_at)}
+                    </p>
+                  </div>
                 </div>
 
                 {/* Content */}
