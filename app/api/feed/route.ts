@@ -2,7 +2,7 @@ import { createClient } from "@supabase/supabase-js"
 import { NextRequest, NextResponse } from "next/server"
 
 // GET /api/feed/ — personalised chronological feed of posts from followed users
-// Falls back to all public posts if user follows nobody
+// Returns empty array (not fallback) if user follows nobody
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization")
   if (!authHeader) {
@@ -35,23 +35,26 @@ export async function GET(req: NextRequest) {
 
   const followingIds = followingData?.map((f) => f.following_id) ?? []
 
-  // If following nobody, fall back to all public posts
-  const query = supabase
+  // If following nobody — return empty feed immediately, no DB query needed
+  if (followingIds.length === 0) {
+    return NextResponse.json({
+      data: [],
+      meta: { page, limit, total: 0, total_pages: 0, is_personalised: false },
+    })
+  }
+
+  // Only fetch posts from followed users
+  const { data: posts, error, count } = await supabase
     .from("posts")
     .select(
       `id, content, image_url, like_count, comment_count, created_at, updated_at,
        author:profiles!posts_author_id_profiles_fkey(id, username, first_name, last_name, avatar_url)`,
       { count: "exact" }
     )
+    .in("author_id", followingIds)
     .eq("is_active", true)
     .order("created_at", { ascending: false })
     .range(offset, offset + limit - 1)
-
-  if (followingIds.length > 0) {
-    query.in("author_id", followingIds)
-  }
-
-  const { data: posts, error, count } = await query
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
@@ -61,13 +64,6 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     data: posts,
-    meta: {
-      page,
-      limit,
-      total,
-      total_pages: Math.ceil(total / limit),
-      // Let the client know if this is a personalised or public feed
-      is_personalised: followingIds.length > 0,
-    },
+    meta: { page, limit, total, total_pages: Math.ceil(total / limit), is_personalised: true },
   })
 }
